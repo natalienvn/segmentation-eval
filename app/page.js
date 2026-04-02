@@ -56,6 +56,8 @@ function conversationToString(messages) {
   return messages.map(m => (m.role === "user" ? "Customer" : "Bot") + ": " + m.text).join("\n");
 }
 
+// Yes = General Legal Question (would convert on JA)
+// No = Actionable Legal Need (would NOT convert on JA, should go to Fount)
 function parseModelResponse(raw) {
   if (!raw) return { classification: null, reasoning: null };
   try {
@@ -63,11 +65,20 @@ function parseModelResponse(raw) {
     const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) {
       const obj = JSON.parse(match[0]);
-      const cls = (obj.classification || "").toUpperCase().trim();
-      return { classification: cls.includes("ACTIONABLE") || cls.includes("ACTION") ? "ACTIONABLE" : "GENERAL", reasoning: obj.reasoning || null };
+      const cls = (obj.classification || "").trim().toLowerCase();
+      // "yes" = general, "no" = actionable
+      if (cls === "yes" || cls === "\"yes\"") return { classification: "GENERAL", reasoning: obj.reasoning || null };
+      if (cls === "no" || cls === "\"no\"") return { classification: "ACTIONABLE", reasoning: obj.reasoning || null };
+      // Fallback: check for old-style labels too
+      if (cls.includes("actionable") || cls.includes("action")) return { classification: "ACTIONABLE", reasoning: obj.reasoning || null };
+      if (cls.includes("general")) return { classification: "GENERAL", reasoning: obj.reasoning || null };
+      return { classification: "GENERAL", reasoning: obj.reasoning || null };
     }
   } catch (e) {}
-  return { classification: raw.toUpperCase().includes("ACTIONABLE") ? "ACTIONABLE" : "GENERAL", reasoning: null };
+  // Fallback: plain text parsing
+  const lower = raw.toLowerCase().trim();
+  if (lower.startsWith("no") || lower.includes('"no"') || lower.includes("actionable")) return { classification: "ACTIONABLE", reasoning: null };
+  return { classification: "GENERAL", reasoning: null };
 }
 
 async function callClassify(prompt, conversation) {
@@ -127,12 +138,12 @@ function ChatModal({ item, onClose, promptLabels }) {
               <span style={{ fontSize: 11, color: C.textMuted }}>JA:</span>
               <Pill label={item.isConverted === "Yes" ? "Converted" : "Bounced"} color={item.isConverted === "Yes" ? C.green : C.amber} bg={item.isConverted === "Yes" ? C.greenDim : C.amberDim} />
               <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>{promptLabels[0]}:</span>
-              <Pill label={item.p1Predicted || "\u2014"} color={item.p1Predicted === "ACTIONABLE" ? C.accent : C.textDim} bg={item.p1Predicted === "ACTIONABLE" ? C.accentDim : C.surface} />
+              <Pill label={item.p1Predicted === "ACTIONABLE" ? "No (Actionable)" : "Yes (General)"} color={item.p1Predicted === "ACTIONABLE" ? C.accent : C.textDim} bg={item.p1Predicted === "ACTIONABLE" ? C.accentDim : C.surface} />
               <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>{promptLabels[1]}:</span>
-              <Pill label={item.p2Predicted || "\u2014"} color={item.p2Predicted === "ACTIONABLE" ? C.purple : C.textDim} bg={item.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.surface} />
+              <Pill label={item.p2Predicted === "ACTIONABLE" ? "No (Actionable)" : "Yes (General)"} color={item.p2Predicted === "ACTIONABLE" ? C.purple : C.textDim} bg={item.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.surface} />
             </div>
           </div>
-          <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textMuted, fontSize: 20, cursor: "pointer", padding: "0 4px" }}>\u00d7</button>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textMuted, fontSize: 20, cursor: "pointer", padding: "0 4px" }}>{"\u00d7"}</button>
         </div>
         {(item.p1Reasoning || item.p2Reasoning) && (
           <div style={{ padding: "12px 20px", borderBottom: "1px solid " + C.border, display: "flex", gap: 16, flexShrink: 0 }}>
@@ -163,9 +174,64 @@ function ChatModal({ item, onClose, promptLabels }) {
   );
 }
 
+const DEFAULT_PROMPT_1 = `You are a classifier that determines whether a customer has a general legal question OR an actionable legal need.
+**Definitions** 
+General Legal Question: The customer is seeking information, explanation, or general guidance. They want to understand something about the law, their rights, or a legal concept. No attorney action is required beyond providing information.
+Actionable Legal Need: The customer explicitly asks for a lawyer to do something on their behalf \u2014 like representation, document preparation, document review, legal filings, negotiation, or other concrete legal services.
+**Classification Guidelines** 
+Consider as an Actionable Legal Need if the customer:
+- Asks for documents drafted, reviewed, or filed
+- Is facing court proceedings, litigation, or formal disputes
+- Requests representation or someone to act on their behalf
+- Asks for contracts to be written, negotiated, or executed
+Consider as a General Legal Question if the customer:
+- Wants to understand their rights or options
+- Is asking "what does X mean" or "is this legal"
+- Is exploring whether they even have a case
+- Wants general advice before deciding next steps
+- Is asking hypothetical or informational questions
+**Guidelines**
+- Assess the conversation ONLY off of whether the user explicitly requests legal assistance or not \u2014 NOT off of the severity of the case. 
+- Do NOT make assumptions. Classify as Actionable Legal Need ONLY if the user explicitly requests legal assistance from a lawyer. 
+- You must state your reasoning behind your decision in 10 words or less. 
+**Output Format**
+- Output "Yes" if the customer has a General Legal Question (they would be well-served by general advice).
+- Output "No" if the customer has an Actionable Legal Need (they need a lawyer to take action on their behalf).
+Example Output Format:
+json{
+  "classification": "Yes" or "No"
+  "reasoning": "<1-2 sentence explanation>"
+}`;
+
+const DEFAULT_PROMPT_2 = `You are a classifier that determines whether a customer has a general legal question OR an actionable legal need. 
+** RULES ** 
+ASSUME that the inquiry is a general legal question UNLESS the user EXPLICITLY requests a lawyer in their inquiry for actionable help. 
+ONLY classify as an Actionable Legal Need IF the user:
+- explicitly asks for documents drafted, reviewed, or filed
+- explicitly asks for representation from a lawyer
+- explicitly asks for contracts to be written, negotiated, or executed
+IF none of the above parameters fit the inquiry, you MUST classify the inquiry as a General Legal Question. 
+The following are NOT actionable legal needs: 
+- Wanting to speak to a lawyer
+- Asking a lawyer for help 
+- Has a severe, seemingly urgent inquiry. 
+** GUIDELINES **
+- Assess the conversation ONLY off of whether the user explicitly requests legal assistance or not \u2014 NOT off of the severity of the case. 
+- Wanting to speak to a lawyer or providing contact information is NOT an actionable need. 
+- Do NOT make assumptions. Classify as Actionable Legal Need ONLY if the user explicitly requests legal assistance from a lawyer. 
+- You must state your reasoning behind your decision in 10 words or less. 
+** Output Format **
+- Output "Yes" if the customer has a General Legal Question (they would be well-served by general advice).
+- Output "No" if the customer has an Actionable Legal Need (they need a lawyer to take action on their behalf).
+** Example Output Format ** 
+json{
+  "classification": "Yes" or "No"
+  "reasoning": "<1-2 sentence explanation>"
+}`;
+
 export default function Page() {
-  const [prompt1, setPrompt1] = useState("You are a classifier that determines whether a customer has a general legal question OR an actionable legal need.\n**Definitions** \nGeneral Legal Question: The customer is seeking information, explanation, or general guidance. They want to understand something about the law, their rights, or a legal concept. No attorney action is required beyond providing information.\nActionable Legal Need: The customer explicitly asks for a lawyer to do something on their behalf \u2014 like representation, document preparation, document review, legal filings, negotiation, or other concrete legal services.\n**Classification Guidelines** \nConsider as an Actionable Legal Need if the customer:\n- Asks for documents drafted, reviewed, or filed\n- Is facing court proceedings, litigation, or formal disputes\n- Requests representation or someone to act on their behalf\n- Asks for contracts to be written, negotiated, or executed\nConsider as a General Legal Question if the customer:\n- Wants to understand their rights or options\n- Is asking \"what does X mean\" or \"is this legal\"\n- Is exploring whether they even have a case\n- Wants general advice before deciding next steps\n- Is asking hypothetical or informational questions\n**Guidelines**\n- Assess the conversation ONLY off of whether the user explicitly requests legal assistance or not \u2014 NOT off of the severity of the case. \n- Do NOT make assumptions. Classify as Actionable Legal Need ONLY if the user explicitly requests legal assistance from a lawyer. \n- You must state your reasoning behind your decision in 10 words or less. \nExample Output Format:\njson{\n  \"classification\": \"<classification>\" \n  \"reasoning\": \"<1-2 sentence explanation>\"\n}");
-  const [prompt2, setPrompt2] = useState("You are a classifier that determines whether a customer has a general legal question OR an actionable legal need. \n** RULES ** \nASSUME that the inquiry is a general legal question UNLESS the user EXPLICITLY requests a lawyer in their inquiry for actionable help. \nONLY classify as an Actionable Legal Need IF the user:\n- explicitly asks for documents drafted, reviewed, or filed\n- explicitly asks for representation from a lawyer\n- explicitly asks for contracts to be written, negotiated, or executed\nIF none of the above parameters fit the inquiry, you MUST classify the inquiry as a General Legal Question. \nThe following are NOT actionable legal needs: \n- Wanting to speak to a lawyer\n- Asking a lawyer for help \n- Has a severe, seemingly urgent inquiry. \n** GUIDELINES **\n- Assess the conversation ONLY off of whether the user explicitly requests legal assistance or not \u2014 NOT off of the severity of the case. \n- Wanting to speak to a lawyer or providing contact information is NOT an actionable need. \n- Do NOT make assumptions. Classify as Actionable Legal Need ONLY if the user explicitly requests legal assistance from a lawyer. \n- You must state your reasoning behind your decision in 10 words or less. \n** Example Output Format ** \njson{\n  \"classification\": \"<classification>\" \n  \"reasoning\": \"<1-2 sentence explanation>\"\n}");
+  const [prompt1, setPrompt1] = useState(DEFAULT_PROMPT_1);
+  const [prompt2, setPrompt2] = useState(DEFAULT_PROMPT_2);
   const [prompt1Label, setPrompt1Label] = useState("Balanced");
   const [prompt2Label, setPrompt2Label] = useState("Strict");
   const [csvData, setCsvData] = useState(null);
@@ -298,9 +364,9 @@ export default function Page() {
         <Card style={{ marginBottom: 18 }}>
           <Label>How to read the results</Label>
           <div style={{ fontSize: 12, color: C.textDim, lineHeight: 1.8 }}>
-            <span style={{ color: C.text, fontWeight: 600 }}>Actionable Legal Need</span> = needs real legal help {"\u2192"} should go to <span style={{ color: C.accent }}>Fount</span> {"\u2192"} expected to NOT convert on JA (IsConverted = No)<br />
-            <span style={{ color: C.text, fontWeight: 600 }}>General Legal Question</span> = just needs info {"\u2192"} stays on <span style={{ color: C.green }}>JustAnswer</span> {"\u2192"} expected to convert on JA (IsConverted = Yes)<br />
-            <span style={{ color: C.amber }}>Alignment</span> = how often the prompt label matches conversion behavior
+            <span style={{ color: C.green, fontWeight: 600 }}>Yes (General)</span> = just needs info {"\u2192"} stays on JustAnswer {"\u2192"} expected: IsConverted = Yes<br />
+            <span style={{ color: C.accent, fontWeight: 600 }}>No (Actionable)</span> = needs real legal help {"\u2192"} should go to Fount {"\u2192"} expected: IsConverted = No<br />
+            <span style={{ color: C.amber, fontWeight: 600 }}>Alignment</span> = how often the prompt output matches conversion behavior
           </div>
         </Card>
         <div style={{ display: "flex", gap: 10, marginBottom: 20, alignItems: "center" }}>
@@ -318,14 +384,14 @@ export default function Page() {
               <Card key={idx}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}><div style={{ width: 8, height: 8, borderRadius: "50%", background: clr }} /><div style={{ fontSize: 13, fontWeight: 600 }}>{lbl}</div></div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                  <MetricCard label="Labeled Actionable" value={s.actionable} color={clr} sub={pct(s.actionable, s.valid) + " of total"} />
-                  <MetricCard label="Labeled General" value={s.general} color={C.textMuted} sub={pct(s.general, s.valid) + " of total"} />
+                  <MetricCard label='Said "No" (Actionable)' value={s.actionable} color={clr} sub={pct(s.actionable, s.valid) + " of total"} />
+                  <MetricCard label='Said "Yes" (General)' value={s.general} color={C.textMuted} sub={pct(s.general, s.valid) + " of total"} />
                   <MetricCard label="Alignment" value={pct(s.matchesExpected, s.valid)} color={C.amber} sub={s.matchesExpected + " of " + s.valid + " match"} />
                 </div>
                 <Label>Conversion correlation</Label>
-                <CorrelationBar label="Labeled Actionable" bounced={s.actionable_notConverted} converted={s.actionable_converted} total={s.actionable} color={clr} />
+                <CorrelationBar label={'Said "No" (Actionable)'} bounced={s.actionable_notConverted} converted={s.actionable_converted} total={s.actionable} color={clr} />
                 <div style={{ fontSize: 10, color: C.textDim, marginBottom: 12, marginTop: -8 }}>{s.actionable_notConverted} bounced (expected) {"\u00b7"} {s.actionable_converted} converted on JA (surprise)</div>
-                <CorrelationBar label="Labeled General" bounced={s.general_notConverted} converted={s.general_converted} total={s.general} color={C.green} />
+                <CorrelationBar label={'Said "Yes" (General)'} bounced={s.general_notConverted} converted={s.general_converted} total={s.general} color={C.green} />
                 <div style={{ fontSize: 10, color: C.textDim, marginTop: -8 }}>{s.general_converted} converted (expected) {"\u00b7"} {s.general_notConverted} bounced (surprise)</div>
               </Card>
             ))}
@@ -340,7 +406,7 @@ export default function Page() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
               <Label>Results ({filteredRows.length})</Label>
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                {[{ key: "all", label: "All", color: C.text }, { key: "disagree", label: "Disagree", color: C.purple }, { key: "both_actionable", label: "Both Actionable", color: C.accent }, { key: "both_general", label: "Both General", color: C.green }, { key: "actionable_but_converted", label: "Actionable but Converted", color: C.red }, { key: "general_but_bounced", label: "General but Bounced", color: C.amber }].map(f => (
+                {[{ key: "all", label: "All", color: C.text }, { key: "disagree", label: "Disagree", color: C.purple }, { key: "both_actionable", label: 'Both "No"', color: C.accent }, { key: "both_general", label: 'Both "Yes"', color: C.green }, { key: "actionable_but_converted", label: '"No" but Converted', color: C.red }, { key: "general_but_bounced", label: '"Yes" but Bounced', color: C.amber }].map(f => (
                   <button key={f.key} onClick={() => setDetailFilter(f.key)} style={{ background: detailFilter === f.key ? f.color + "22" : "transparent", color: detailFilter === f.key ? f.color : C.textDim, border: "1px solid " + (detailFilter === f.key ? f.color + "44" : C.border), borderRadius: 5, padding: "3px 9px", fontSize: 10, fontWeight: 600, cursor: "pointer", fontFamily: "'JetBrains Mono'" }}>{f.label}</button>
                 ))}
               </div>
@@ -355,8 +421,8 @@ export default function Page() {
                     const agree = r.p1Predicted === r.p2Predicted;
                     return (<tr key={r.index} onClick={() => setChatItem(r)} style={{ borderBottom: "1px solid " + C.border, cursor: "pointer", background: i % 2 === 0 ? "transparent" : C.bg + "80" }} onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover} onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : C.bg + "80"}>
                       <td style={{ padding: "8px 10px", fontFamily: "'JetBrains Mono'", color: C.textDim, fontSize: 11 }}>{r.index + 1}</td>
-                      <td style={{ padding: "8px 10px" }}><Pill label={r.p1Predicted || "ERR"} color={r.p1Error ? C.red : r.p1Predicted === "ACTIONABLE" ? C.accent : C.textDim} bg={r.p1Error ? C.redDim : r.p1Predicted === "ACTIONABLE" ? C.accentDim : C.bg} /></td>
-                      <td style={{ padding: "8px 10px" }}><Pill label={r.p2Predicted || "ERR"} color={r.p2Error ? C.red : r.p2Predicted === "ACTIONABLE" ? C.purple : C.textDim} bg={r.p2Error ? C.redDim : r.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.bg} /></td>
+                      <td style={{ padding: "8px 10px" }}><Pill label={r.p1Predicted === "ACTIONABLE" ? "No" : "Yes"} color={r.p1Error ? C.red : r.p1Predicted === "ACTIONABLE" ? C.accent : C.green} bg={r.p1Error ? C.redDim : r.p1Predicted === "ACTIONABLE" ? C.accentDim : C.greenDim} /></td>
+                      <td style={{ padding: "8px 10px" }}><Pill label={r.p2Predicted === "ACTIONABLE" ? "No" : "Yes"} color={r.p2Error ? C.red : r.p2Predicted === "ACTIONABLE" ? C.purple : C.green} bg={r.p2Error ? C.redDim : r.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.greenDim} /></td>
                       <td style={{ padding: "8px 10px" }}><Pill label={r.isConverted === "Yes" ? "Conv." : "Bounced"} color={r.isConverted === "Yes" ? C.green : C.amber} bg={r.isConverted === "Yes" ? C.greenDim : C.amberDim} /></td>
                       <td style={{ padding: "8px 10px", fontSize: 13 }}>{agree ? <span style={{ color: C.green }}>{"\u2713"}</span> : <span style={{ color: C.purple }}>{"\u2717"}</span>}</td>
                       <td style={{ padding: "8px 10px", color: C.textDim, fontSize: 11, fontFamily: "'IBM Plex Mono'", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.conversation?.slice(0, 150)}</td>
@@ -368,7 +434,7 @@ export default function Page() {
             {filteredRows.length > 200 && <div style={{ fontSize: 11, color: C.textMuted, marginTop: 6, textAlign: "center" }}>Showing 200 of {filteredRows.length}</div>}
           </Card>
         </>)}
-        {status === "idle" && !results && <div style={{ textAlign: "center", padding: "40px 20px", color: C.textDim }}><div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>{"\u25b8 \u25b8"}</div><div style={{ fontSize: 13, marginBottom: 4 }}>Upload your conversation log, pick a sample size, and run</div><div style={{ fontSize: 12 }}>Messages auto-stitched from columns {"\u00b7"} IsConverted used as correlation signal</div></div>}
+        {status === "idle" && !results && <div style={{ textAlign: "center", padding: "40px 20px", color: C.textDim }}><div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>{"\u25b8 \u25b8"}</div><div style={{ fontSize: 13, marginBottom: 4 }}>Upload your conversation log, pick a sample size, and run</div><div style={{ fontSize: 12 }}>Prompts output Yes (general) or No (actionable) {"\u00b7"} compared against IsConverted</div></div>}
       </div>
     </div>
   );

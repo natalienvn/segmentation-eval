@@ -116,7 +116,7 @@ function CorrelationBar({ label, bounced, converted, total, color }) {
       </div>
       <div style={{ display: "flex", height: 24, borderRadius: 6, overflow: "hidden", border: "1px solid " + C.border }}>
         <div style={{ width: bPct + "%", background: color || C.accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {bPct > 12 && <span style={{ fontSize: 10, color: "#fff", fontWeight: 600 }}>{bPct.toFixed(0)}% Bounced</span>}
+          {bPct > 12 && <span style={{ fontSize: 10, color: "#fff", fontWeight: 600 }}>{bPct.toFixed(0)}% Didn't Conv.</span>}
         </div>
         <div style={{ width: cPct + "%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
           {cPct > 12 && <span style={{ fontSize: 10, color: "#fff", fontWeight: 600 }}>{cPct.toFixed(0)}% Converted</span>}
@@ -136,7 +136,7 @@ function ChatModal({ item, onClose, promptLabels }) {
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Conversation #{item.index + 1}</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <span style={{ fontSize: 11, color: C.textMuted }}>JA:</span>
-              <Pill label={item.isConverted === "Yes" ? "Converted" : "Bounced"} color={item.isConverted === "Yes" ? C.green : C.amber} bg={item.isConverted === "Yes" ? C.greenDim : C.amberDim} />
+              <Pill label={item.isConverted === "Yes" ? "Converted" : "Didn't Convert"} color={item.isConverted === "Yes" ? C.green : C.amber} bg={item.isConverted === "Yes" ? C.greenDim : C.amberDim} />
               <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>{promptLabels[0]}:</span>
               <Pill label={item.p1Predicted === "ACTIONABLE" ? "No (Actionable)" : "Yes (General)"} color={item.p1Predicted === "ACTIONABLE" ? C.accent : C.textDim} bg={item.p1Predicted === "ACTIONABLE" ? C.accentDim : C.surface} />
               <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>{promptLabels[1]}:</span>
@@ -349,7 +349,7 @@ export default function Page() {
           <Card>
             <Label>Conversation Log (CSV)</Label>
             <input type="file" accept=".csv" onChange={handleFile} style={{ fontSize: 12, color: C.text, marginBottom: 10 }} />
-            {csvData && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono'", lineHeight: 1.8 }}><span style={{ color: C.green }}>{"\u2713"} {csvData.rows.length} conversations loaded</span><br /><span style={{ color: C.textDim }}>Converted (JA): {convertedCount} {"\u00b7"} Bounced: {notConvertedCount}</span></div>}
+            {csvData && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono'", lineHeight: 1.8 }}><span style={{ color: C.green }}>{"\u2713"} {csvData.rows.length} conversations loaded</span><br /><span style={{ color: C.textDim }}>Converted (JA): {convertedCount} {"\u00b7"} Didn't Convert: {notConvertedCount}</span></div>}
           </Card>
           <Card>
             <Label>Sample Size</Label>
@@ -390,9 +390,9 @@ export default function Page() {
                 </div>
                 <Label>Conversion correlation</Label>
                 <CorrelationBar label={'Said "No" (Actionable)'} bounced={s.actionable_notConverted} converted={s.actionable_converted} total={s.actionable} color={clr} />
-                <div style={{ fontSize: 10, color: C.textDim, marginBottom: 12, marginTop: -8 }}>{s.actionable_notConverted} bounced (expected) {"\u00b7"} {s.actionable_converted} converted on JA (surprise)</div>
+                <div style={{ fontSize: 10, color: C.textDim, marginBottom: 12, marginTop: -8 }}>{s.actionable_notConverted} didn't convert (expected) {"\u00b7"} {s.actionable_converted} converted on JA (surprise)</div>
                 <CorrelationBar label={'Said "Yes" (General)'} bounced={s.general_notConverted} converted={s.general_converted} total={s.general} color={C.green} />
-                <div style={{ fontSize: 10, color: C.textDim, marginTop: -8 }}>{s.general_converted} converted (expected) {"\u00b7"} {s.general_notConverted} bounced (surprise)</div>
+                <div style={{ fontSize: 10, color: C.textDim, marginTop: -8 }}>{s.general_converted} converted (expected) {"\u00b7"} {s.general_notConverted} didn't convert (surprise)</div>
               </Card>
             ))}
           </div>
@@ -406,7 +406,7 @@ export default function Page() {
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
               <Label>Results ({filteredRows.length})</Label>
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                {[{ key: "all", label: "All", color: C.text }, { key: "disagree", label: "Disagree", color: C.purple }, { key: "both_actionable", label: 'Both "No"', color: C.accent }, { key: "both_general", label: 'Both "Yes"', color: C.green }, { key: "actionable_but_converted", label: '"No" but Converted', color: C.red }, { key: "general_but_bounced", label: '"Yes" but Bounced', color: C.amber }].map(f => (
+                {[{ key: "all", label: "All", color: C.text }, { key: "disagree", label: "Disagree", color: C.purple }, { key: "both_actionable", label: 'Both "No"', color: C.accent }, { key: "both_general", label: 'Both "Yes"', color: C.green }, { key: "actionable_but_converted", label: '"No" but Converted', color: C.red }, { key: "general_but_bounced", label: '"Yes" but Didn\'t Convert', color: C.amber }].map(f => (
                   <button key={f.key} onClick={() => setDetailFilter(f.key)} style={{ background: detailFilter === f.key ? f.color + "22" : "transparent", color: detailFilter === f.key ? f.color : C.textDim, border: "1px solid " + (detailFilter === f.key ? f.color + "44" : C.border), borderRadius: 5, padding: "3px 9px", fontSize: 10, fontWeight: 600, cursor: "pointer", fontFamily: "'JetBrains Mono'" }}>{f.label}</button>
                 ))}
               </div>
@@ -423,7 +423,7 @@ export default function Page() {
                       <td style={{ padding: "8px 10px", fontFamily: "'JetBrains Mono'", color: C.textDim, fontSize: 11 }}>{r.index + 1}</td>
                       <td style={{ padding: "8px 10px" }}><Pill label={r.p1Predicted === "ACTIONABLE" ? "No" : "Yes"} color={r.p1Error ? C.red : r.p1Predicted === "ACTIONABLE" ? C.accent : C.green} bg={r.p1Error ? C.redDim : r.p1Predicted === "ACTIONABLE" ? C.accentDim : C.greenDim} /></td>
                       <td style={{ padding: "8px 10px" }}><Pill label={r.p2Predicted === "ACTIONABLE" ? "No" : "Yes"} color={r.p2Error ? C.red : r.p2Predicted === "ACTIONABLE" ? C.purple : C.green} bg={r.p2Error ? C.redDim : r.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.greenDim} /></td>
-                      <td style={{ padding: "8px 10px" }}><Pill label={r.isConverted === "Yes" ? "Conv." : "Bounced"} color={r.isConverted === "Yes" ? C.green : C.amber} bg={r.isConverted === "Yes" ? C.greenDim : C.amberDim} /></td>
+                      <td style={{ padding: "8px 10px" }}><Pill label={r.isConverted === "Yes" ? "Conv." : "Didn't Conv."} color={r.isConverted === "Yes" ? C.green : C.amber} bg={r.isConverted === "Yes" ? C.greenDim : C.amberDim} /></td>
                       <td style={{ padding: "8px 10px", fontSize: 13 }}>{agree ? <span style={{ color: C.green }}>{"\u2713"}</span> : <span style={{ color: C.purple }}>{"\u2717"}</span>}</td>
                       <td style={{ padding: "8px 10px", color: C.textDim, fontSize: 11, fontFamily: "'IBM Plex Mono'", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.conversation?.slice(0, 150)}</td>
                     </tr>);

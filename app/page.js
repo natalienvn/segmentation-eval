@@ -9,7 +9,7 @@ const C = {
   green: "#10b981", greenDim: "#064e3b",
   red: "#ef4444", redDim: "#7f1d1d",
   amber: "#f59e0b", amberDim: "#78350f",
-  cyan: "#06b6d4", cyanDim: "#0e3a42",
+  cyan: "#06b6d4",
   purple: "#a78bfa", purpleDim: "#2e1065",
 };
 
@@ -34,7 +34,7 @@ function parseCSV(text) {
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const vals = parseLine(lines[i]);
-    if (vals.length < headers.length / 2) continue;
+    if (vals.length < 2) continue;
     const row = {};
     headers.forEach((h, j) => { row[h] = vals[j] || ""; });
     rows.push(row);
@@ -42,18 +42,29 @@ function parseCSV(text) {
   return { headers, rows };
 }
 
-function stitchConversation(row) {
+function parseConversationMessages(text) {
+  if (!text || !text.trim()) return [{ role: "user", text: text || "" }];
+  const lines = text.split("\n").filter(l => l.trim());
   const messages = [];
-  for (let i = 1; i <= 10; i++) {
-    const text = (row["Message_No_" + i] || "").trim();
-    if (!text) continue;
-    messages.push({ role: i % 2 === 1 ? "bot" : "user", text });
+  let currentRole = null, currentText = "";
+  for (const line of lines) {
+    let detectedRole = null, content = line;
+    if (/^(user|customer|client|human)\s*[:|-]/i.test(line.trim())) {
+      detectedRole = "user"; content = line.replace(/^(user|customer|client|human)\s*[:|-]\s*/i, "");
+    } else if (/^(bot|assistant|agent|ai|system|lawyer|expert)\s*[:|-]/i.test(line.trim())) {
+      detectedRole = "bot"; content = line.replace(/^(bot|assistant|agent|ai|system|lawyer|expert)\s*[:|-]\s*/i, "");
+    }
+    if (detectedRole) {
+      if (currentRole && currentText.trim()) messages.push({ role: currentRole, text: currentText.trim() });
+      currentRole = detectedRole; currentText = content;
+    } else {
+      if (!currentRole) currentRole = "user";
+      currentText += "\n" + line;
+    }
   }
+  if (currentRole && currentText.trim()) messages.push({ role: currentRole, text: currentText.trim() });
+  if (messages.length === 0) messages.push({ role: "user", text });
   return messages;
-}
-
-function conversationToString(messages) {
-  return messages.map(m => (m.role === "user" ? "Customer" : "Bot") + ": " + m.text).join("\n");
 }
 
 function parseModelResponse(raw) {
@@ -64,23 +75,23 @@ function parseModelResponse(raw) {
     if (match) {
       const obj = JSON.parse(match[0]);
       const cls = (obj.classification || "").trim().toLowerCase();
-      if (cls === "yes" || cls === "\"yes\"") return { classification: "GENERAL", reasoning: obj.reasoning || null };
-      if (cls === "no" || cls === "\"no\"") return { classification: "ACTIONABLE", reasoning: obj.reasoning || null };
-      if (cls.includes("actionable") || cls.includes("action")) return { classification: "ACTIONABLE", reasoning: obj.reasoning || null };
-      if (cls.includes("general")) return { classification: "GENERAL", reasoning: obj.reasoning || null };
-      return { classification: "GENERAL", reasoning: obj.reasoning || null };
+      if (cls === "yes" || cls === "\"yes\"") return { classification: "YES", reasoning: obj.reasoning || null };
+      if (cls === "no" || cls === "\"no\"") return { classification: "NO", reasoning: obj.reasoning || null };
+      if (cls.includes("actionable") || cls.includes("action")) return { classification: "NO", reasoning: obj.reasoning || null };
+      if (cls.includes("general")) return { classification: "YES", reasoning: obj.reasoning || null };
+      return { classification: "YES", reasoning: obj.reasoning || null };
     }
   } catch (e) {}
   const lower = raw.toLowerCase().trim();
-  if (lower.startsWith("no") || lower.includes('"no"') || lower.includes("actionable")) return { classification: "ACTIONABLE", reasoning: null };
-  return { classification: "GENERAL", reasoning: null };
+  if (lower.startsWith("no") || lower.includes('"no"') || lower.includes("actionable")) return { classification: "NO", reasoning: null };
+  return { classification: "YES", reasoning: null };
 }
 
-async function callClassify(prompt, conversation) {
+async function callClassify(prompt, text) {
   const resp = await fetch("/api/classify", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 200, messages: [{ role: "user", content: prompt + "\n\n--- CONVERSATION ---\n" + conversation }] }),
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 200, messages: [{ role: "user", content: prompt + "\n\n--- CONVERSATION ---\n" + text }] }),
   });
   if (!resp.ok) { const err = await resp.json().catch(() => ({})); throw new Error(err.error || "API error " + resp.status); }
   return resp.json();
@@ -92,6 +103,18 @@ function Label({ children }) { return <div style={{ fontSize: 11, color: C.textM
 function Card({ children, style: sx }) { return <div style={{ background: C.surface, border: "1px solid " + C.border, borderRadius: 10, padding: 20, ...sx }}>{children}</div>; }
 function Pill({ label, color, bg }) { return <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600, background: bg, color, border: "1px solid " + color + "33", whiteSpace: "nowrap" }}>{label}</span>; }
 
+function Select({ value, onChange, options, placeholder }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{
+      background: C.bg, color: C.text, border: "1px solid " + C.border, borderRadius: 5,
+      padding: "6px 10px", fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", minWidth: 160,
+    }}>
+      {placeholder && <option value="">{placeholder}</option>}
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+}
+
 function MetricCard({ label, value, color, sub }) {
   return (
     <div style={{ background: C.surface, border: "1px solid " + C.border, borderRadius: 8, padding: "14px 18px", flex: 1, minWidth: 110 }}>
@@ -102,55 +125,31 @@ function MetricCard({ label, value, color, sub }) {
   );
 }
 
-function CorrelationBar({ label, bounced, converted, total, color }) {
-  const bPct = total > 0 ? (bounced / total * 100) : 0;
-  const cPct = total > 0 ? (converted / total * 100) : 0;
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-        <span style={{ color: C.text, fontWeight: 600 }}>{label}</span>
-        <span style={{ color: C.textDim }}>{total} convos</span>
-      </div>
-      <div style={{ display: "flex", height: 24, borderRadius: 6, overflow: "hidden", border: "1px solid " + C.border }}>
-        <div style={{ width: bPct + "%", background: color || C.accent, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {bPct > 12 && <span style={{ fontSize: 10, color: "#fff", fontWeight: 600 }}>{bPct.toFixed(0)}% Didn't Conv.</span>}
-        </div>
-        <div style={{ width: cPct + "%", background: C.green, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {cPct > 12 && <span style={{ fontSize: 10, color: "#fff", fontWeight: 600 }}>{cPct.toFixed(0)}% Converted</span>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ChatModal({ item, onClose, promptLabels }) {
+function ChatModal({ item, onClose }) {
   if (!item) return null;
+  const messages = parseConversationMessages(item.text);
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={onClose}>
       <div style={{ background: C.bg, border: "1px solid " + C.border, borderRadius: 14, width: "100%", maxWidth: 700, maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid " + C.border, display: "flex", justifyContent: "space-between", alignItems: "start", flexShrink: 0 }}>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Conversation #{item.index + 1}</div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontSize: 11, color: C.textMuted }}>JA:</span>
-              <Pill label={item.isConverted === "Yes" ? "Converted" : "Didn't Convert"} color={item.isConverted === "Yes" ? C.green : C.amber} bg={item.isConverted === "Yes" ? C.greenDim : C.amberDim} />
-              <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>{promptLabels[0]}:</span>
-              <Pill label={item.p1Predicted === "ACTIONABLE" ? "No (Actionable)" : "Yes (General)"} color={item.p1Predicted === "ACTIONABLE" ? C.accent : C.green} bg={item.p1Predicted === "ACTIONABLE" ? C.accentDim : C.greenDim} />
-              <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 8 }}>{promptLabels[1]}:</span>
-              <Pill label={item.p2Predicted === "ACTIONABLE" ? "No (Actionable)" : "Yes (General)"} color={item.p2Predicted === "ACTIONABLE" ? C.purple : C.green} bg={item.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.greenDim} />
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Row #{item.index + 1}</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <span style={{ fontSize: 11, color: C.textMuted }}>Classification:</span>
+              <Pill label={item.predicted === "NO" ? "No (Actionable)" : "Yes (General)"} color={item.predicted === "NO" ? C.accent : C.green} bg={item.predicted === "NO" ? C.accentDim : C.greenDim} />
             </div>
           </div>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: C.textMuted, fontSize: 20, cursor: "pointer", padding: "0 4px" }}>{"\u00d7"}</button>
         </div>
-        {(item.p1Reasoning || item.p2Reasoning) && (
-          <div style={{ padding: "12px 20px", borderBottom: "1px solid " + C.border, display: "flex", gap: 16, flexShrink: 0 }}>
-            {item.p1Reasoning && <div style={{ flex: 1 }}><div style={{ fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, fontWeight: 600 }}>{promptLabels[0]} reasoning</div><div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, fontStyle: "italic" }}>{item.p1Reasoning}</div></div>}
-            {item.p2Reasoning && <div style={{ flex: 1 }}><div style={{ fontSize: 10, color: C.purple, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, fontWeight: 600 }}>{promptLabels[1]} reasoning</div><div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, fontStyle: "italic" }}>{item.p2Reasoning}</div></div>}
+        {item.reasoning && (
+          <div style={{ padding: "12px 20px", borderBottom: "1px solid " + C.border, flexShrink: 0 }}>
+            <div style={{ fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, fontWeight: 600 }}>Reasoning</div>
+            <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.5, fontStyle: "italic" }}>{item.reasoning}</div>
           </div>
         )}
         <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {(item.messages || []).map((msg, i) => (
+            {messages.map((msg, i) => (
               <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start" }}>
                 <div style={{
                   maxWidth: "80%", padding: "10px 14px", borderRadius: 12,
@@ -171,11 +170,9 @@ function ChatModal({ item, onClose, promptLabels }) {
   );
 }
 
-// ── Run History Sidebar ───────────────────────────────────────
-
 function RunHistory({ runs, activeRunId, onSelectRun, onDeleteRun, loading }) {
   if (loading) return <div style={{ fontSize: 12, color: C.textDim, padding: 12 }}>Loading runs...</div>;
-  if (runs.length === 0) return <div style={{ fontSize: 12, color: C.textDim, padding: 12 }}>No saved runs yet. Run an eval and save it.</div>;
+  if (runs.length === 0) return <div style={{ fontSize: 12, color: C.textDim, padding: 12 }}>No saved runs yet.</div>;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {runs.map(r => (
@@ -184,7 +181,6 @@ function RunHistory({ runs, activeRunId, onSelectRun, onDeleteRun, loading }) {
             padding: "10px 14px", borderRadius: 8, cursor: "pointer",
             background: activeRunId === r.id ? C.accentDim : C.bg,
             border: "1px solid " + (activeRunId === r.id ? C.accent : C.border),
-            transition: "all 0.15s",
           }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: activeRunId === r.id ? C.accent : C.text, marginBottom: 4 }}>{r.name}</div>
@@ -193,10 +189,10 @@ function RunHistory({ runs, activeRunId, onSelectRun, onDeleteRun, loading }) {
           </div>
           <div style={{ fontSize: 10, color: C.textDim, fontFamily: "'JetBrains Mono'" }}>
             {new Date(r.timestamp).toLocaleDateString()} {new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            {" \u00b7 "}{r.sampleSize || r.total} convos
+            {" \u00b7 "}{r.total} convos
           </div>
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 2 }}>
-            {r.prompt1Label}: {r.s1?.actionable || 0} actionable {" \u00b7 "} {r.prompt2Label}: {r.s2?.actionable || 0} actionable
+            Yes: {r.yesCount || 0} {" \u00b7 "} No: {r.noCount || 0}
           </div>
         </div>
       ))}
@@ -204,38 +200,7 @@ function RunHistory({ runs, activeRunId, onSelectRun, onDeleteRun, loading }) {
   );
 }
 
-// ── Default Prompts ───────────────────────────────────────────
-
-const DEFAULT_PROMPT_1 = `You are a classifier that determines whether a customer has a general legal question OR an actionable legal need.
-**Definitions** 
-General Legal Question: The customer is seeking information, explanation, or general guidance. They want to understand something about the law, their rights, or a legal concept. No attorney action is required beyond providing information.
-Actionable Legal Need: The customer explicitly asks for a lawyer to do something on their behalf \u2014 like representation, document preparation, document review, legal filings, negotiation, or other concrete legal services.
-**Classification Guidelines** 
-Consider as an Actionable Legal Need if the customer:
-- Asks for documents drafted, reviewed, or filed
-- Is facing court proceedings, litigation, or formal disputes
-- Requests representation or someone to act on their behalf
-- Asks for contracts to be written, negotiated, or executed
-Consider as a General Legal Question if the customer:
-- Wants to understand their rights or options
-- Is asking "what does X mean" or "is this legal"
-- Is exploring whether they even have a case
-- Wants general advice before deciding next steps
-- Is asking hypothetical or informational questions
-**Guidelines**
-- Assess the conversation ONLY off of whether the user explicitly requests legal assistance or not \u2014 NOT off of the severity of the case. 
-- Do NOT make assumptions. Classify as Actionable Legal Need ONLY if the user explicitly requests legal assistance from a lawyer. 
-- You must state your reasoning behind your decision in 10 words or less. 
-**Output Format**
-- Output "Yes" if the customer has a General Legal Question (they would be well-served by general advice).
-- Output "No" if the customer has an Actionable Legal Need (they need a lawyer to take action on their behalf).
-Example Output Format:
-json{
-  "classification": "Yes" or "No"
-  "reasoning": "<1-2 sentence explanation>"
-}`;
-
-const DEFAULT_PROMPT_2 = `You are a classifier that determines whether a customer has a general legal question OR an actionable legal need.
+const DEFAULT_PROMPT = `You are a classifier that determines whether a customer has a general legal question OR an actionable legal need.
 
 ** RULES **
 ASSUME that the inquiry is a general legal question UNLESS the user clearly needs a lawyer to take action on their behalf.
@@ -273,24 +238,21 @@ json{
   "reasoning": "<1-2 sentence explanation>"
 }`;
 
-// ── Main App ──────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────
 
 export default function Page() {
-  const [prompt1, setPrompt1] = useState(DEFAULT_PROMPT_1);
-  const [prompt2, setPrompt2] = useState(DEFAULT_PROMPT_2);
-  const [prompt1Label, setPrompt1Label] = useState("Balanced");
-  const [prompt2Label, setPrompt2Label] = useState("Strict (Loosened)");
+  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [csvData, setCsvData] = useState(null);
+  const [textCol, setTextCol] = useState("");
   const [sampleSize, setSampleSize] = useState(50);
   const [status, setStatus] = useState("idle");
-  const [progress, setProgress] = useState({ done: 0, total: 0, phase: "" });
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [results, setResults] = useState(null);
   const [detailFilter, setDetailFilter] = useState("all");
   const [chatItem, setChatItem] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
   const abortRef = useRef(false);
 
-  // Run history
   const [savedRuns, setSavedRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(true);
   const [activeRunId, setActiveRunId] = useState(null);
@@ -298,7 +260,6 @@ export default function Page() {
   const [showHistory, setShowHistory] = useState(false);
   const [savingRun, setSavingRun] = useState(false);
 
-  // Load saved runs on mount
   useEffect(() => {
     fetch("/api/runs").then(r => r.json()).then(data => {
       if (Array.isArray(data)) setSavedRuns(data);
@@ -311,11 +272,8 @@ export default function Page() {
       const resp = await fetch("/api/runs?id=" + id);
       const data = await resp.json();
       if (data.evaluated) {
-        setResults({ evaluated: data.evaluated, s1: data.s1, s2: data.s2, total: data.total, disagreeCount: data.disagreeCount });
-        setPrompt1(data.prompt1 || DEFAULT_PROMPT_1);
-        setPrompt2(data.prompt2 || DEFAULT_PROMPT_2);
-        setPrompt1Label(data.prompt1Label || "Balanced");
-        setPrompt2Label(data.prompt2Label || "Strict");
+        setResults({ evaluated: data.evaluated, total: data.total, yesCount: data.yesCount, noCount: data.noCount, errors: data.errors });
+        setPrompt(data.prompt || DEFAULT_PROMPT);
         setActiveRunId(id);
         setStatus("done");
         setDetailFilter("all");
@@ -331,22 +289,20 @@ export default function Page() {
         id: Date.now().toString(),
         name: runName.trim(),
         timestamp: new Date().toISOString(),
-        prompt1, prompt2, prompt1Label, prompt2Label,
-        sampleSize,
+        prompt, sampleSize,
         evaluated: results.evaluated,
-        s1: results.s1, s2: results.s2,
-        total: results.total, disagreeCount: results.disagreeCount,
+        total: results.total, yesCount: results.yesCount, noCount: results.noCount, errors: results.errors,
       };
       const resp = await fetch("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       const data = await resp.json();
       if (data.id) {
-        setSavedRuns(prev => [{ id: data.id, name: runName.trim(), timestamp: payload.timestamp, sampleSize, prompt1Label, prompt2Label, s1: results.s1, s2: results.s2, total: results.total, disagreeCount: results.disagreeCount }, ...prev]);
+        setSavedRuns(prev => [{ id: data.id, name: runName.trim(), timestamp: payload.timestamp, total: results.total, yesCount: results.yesCount, noCount: results.noCount }, ...prev]);
         setActiveRunId(data.id);
         setRunName("");
       }
     } catch (e) { setErrorMsg("Failed to save run"); }
     setSavingRun(false);
-  }, [results, runName, prompt1, prompt2, prompt1Label, prompt2Label, sampleSize]);
+  }, [results, runName, prompt, sampleSize]);
 
   const deleteRun = useCallback(async (id) => {
     try {
@@ -359,101 +315,101 @@ export default function Page() {
   const handleFile = useCallback((e) => {
     const file = e.target.files[0]; if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => { setCsvData(parseCSV(ev.target.result)); setResults(null); setStatus("idle"); setErrorMsg(""); setActiveRunId(null); };
+    reader.onload = (ev) => {
+      const parsed = parseCSV(ev.target.result);
+      setCsvData(parsed);
+      setTextCol(parsed.headers[0] || "");
+      setResults(null); setStatus("idle"); setErrorMsg(""); setActiveRunId(null);
+    };
     reader.readAsText(file);
   }, []);
 
   const runEval = useCallback(async () => {
-    if (!csvData) return;
+    if (!csvData || !textCol) return;
     abortRef.current = false; setStatus("running"); setErrorMsg(""); setResults(null); setActiveRunId(null);
-    const allRows = csvData.rows.filter(r => r.IsConverted === "Yes" || r.IsConverted === "No");
+
+    const allRows = csvData.rows.filter(r => (r[textCol] || "").trim().length > 0);
     const sample = sampleSize >= allRows.length ? [...allRows] : [...allRows].sort(() => Math.random() - 0.5).slice(0, sampleSize);
-    const totalCalls = sample.length * 2;
-    let callsDone = 0;
-    setProgress({ done: 0, total: totalCalls, phase: "Running Prompt 1" });
-    const evaluated = sample.map((row, i) => {
-      const messages = stitchConversation(row);
-      return { index: i, id: row.VAChat_SKEY || "row-" + i, messages, conversation: conversationToString(messages), isConverted: (row.IsConverted || "").trim(), expectedLabel: (row.IsConverted || "").trim() === "Yes" ? "GENERAL" : "ACTIONABLE", pkw: row.pkw || "", p1Predicted: null, p1Reasoning: null, p1Error: null, p2Predicted: null, p2Reasoning: null, p2Error: null };
-    });
+
+    setProgress({ done: 0, total: sample.length });
+
+    const evaluated = sample.map((row, i) => ({
+      index: i, text: row[textCol] || "", predicted: null, reasoning: null, error: null,
+    }));
+
     for (let i = 0; i < evaluated.length; i++) {
       if (abortRef.current) break;
-      try { const data = await callClassify(prompt1, evaluated[i].conversation); const raw = data.content?.[0]?.text || ""; const parsed = parseModelResponse(raw); evaluated[i].p1Predicted = parsed.classification; evaluated[i].p1Reasoning = parsed.reasoning; } catch (err) { evaluated[i].p1Error = err.message; }
-      callsDone++; setProgress({ done: callsDone, total: totalCalls, phase: "Prompt 1: " + (i + 1) + "/" + evaluated.length });
+      try {
+        const data = await callClassify(prompt, evaluated[i].text);
+        const raw = data.content?.[0]?.text || "";
+        const parsed = parseModelResponse(raw);
+        evaluated[i].predicted = parsed.classification;
+        evaluated[i].reasoning = parsed.reasoning;
+      } catch (err) { evaluated[i].error = err.message; }
+      setProgress({ done: i + 1, total: sample.length });
       if (i < evaluated.length - 1) await new Promise(r => setTimeout(r, 300));
     }
+
     if (abortRef.current) { setStatus("idle"); return; }
-    setProgress(p => ({ ...p, phase: "Running Prompt 2" }));
-    for (let i = 0; i < evaluated.length; i++) {
-      if (abortRef.current) break;
-      try { const data = await callClassify(prompt2, evaluated[i].conversation); const raw = data.content?.[0]?.text || ""; const parsed = parseModelResponse(raw); evaluated[i].p2Predicted = parsed.classification; evaluated[i].p2Reasoning = parsed.reasoning; } catch (err) { evaluated[i].p2Error = err.message; }
-      callsDone++; setProgress({ done: callsDone, total: totalCalls, phase: "Prompt 2: " + (i + 1) + "/" + evaluated.length });
-      if (i < evaluated.length - 1) await new Promise(r => setTimeout(r, 300));
+
+    let yesCount = 0, noCount = 0, errors = 0;
+    for (const r of evaluated) {
+      if (r.error) { errors++; continue; }
+      if (r.predicted === "YES") yesCount++;
+      else noCount++;
     }
-    if (abortRef.current) { setStatus("idle"); return; }
-    const computeStats = (key) => {
-      let actionable = 0, general = 0, errors = 0, actionable_converted = 0, actionable_notConverted = 0, general_converted = 0, general_notConverted = 0, matchesExpected = 0;
-      for (const r of evaluated) {
-        const pred = r[key + "Predicted"]; if (r[key + "Error"] || !pred) { errors++; continue; }
-        if (pred === "ACTIONABLE") { actionable++; if (r.isConverted === "Yes") actionable_converted++; else actionable_notConverted++; }
-        else { general++; if (r.isConverted === "Yes") general_converted++; else general_notConverted++; }
-        if (pred === r.expectedLabel) matchesExpected++;
-      }
-      const valid = evaluated.length - errors;
-      return { actionable, general, errors, actionable_converted, actionable_notConverted, general_converted, general_notConverted, matchesExpected, valid };
-    };
-    setResults({ evaluated, s1: computeStats("p1"), s2: computeStats("p2"), total: evaluated.length, disagreeCount: evaluated.filter(r => r.p1Predicted && r.p2Predicted && r.p1Predicted !== r.p2Predicted).length });
+
+    setResults({ evaluated, total: evaluated.length, yesCount, noCount, errors });
     setStatus("done");
-  }, [csvData, prompt1, prompt2, sampleSize]);
+  }, [csvData, textCol, prompt, sampleSize]);
 
   const filteredRows = results?.evaluated?.filter(r => {
     if (detailFilter === "all") return true;
-    if (detailFilter === "disagree") return r.p1Predicted && r.p2Predicted && r.p1Predicted !== r.p2Predicted;
-    if (detailFilter === "both_actionable") return r.p1Predicted === "ACTIONABLE" && r.p2Predicted === "ACTIONABLE";
-    if (detailFilter === "both_general") return r.p1Predicted === "GENERAL" && r.p2Predicted === "GENERAL";
-    if (detailFilter === "converted") return r.isConverted === "Yes";
-    if (detailFilter === "didnt_convert") return r.isConverted === "No";
+    if (detailFilter === "yes") return r.predicted === "YES";
+    if (detailFilter === "no") return r.predicted === "NO";
+    if (detailFilter === "error") return !!r.error;
     return true;
   }) || [];
 
   const exportCSV = useCallback(() => {
     if (!results) return;
-    const header = ["ID", "IsConverted", "Expected", prompt1Label, prompt1Label + " Reasoning", prompt2Label, prompt2Label + " Reasoning", "Agree", "Conversation"];
-    const rows = results.evaluated.map(r => [r.id, r.isConverted, r.expectedLabel, r.p1Predicted || "ERROR", '"' + (r.p1Reasoning || "").replace(/"/g, '""') + '"', r.p2Predicted || "ERROR", '"' + (r.p2Reasoning || "").replace(/"/g, '""') + '"', r.p1Predicted === r.p2Predicted ? "Yes" : "No", '"' + (r.conversation || "").slice(0, 500).replace(/"/g, '""') + '"']);
+    const header = ["Index", "Classification", "Reasoning", "Text"];
+    const rows = results.evaluated.map(r => [
+      r.index + 1,
+      r.predicted || "ERROR",
+      '"' + (r.reasoning || "").replace(/"/g, '""') + '"',
+      '"' + (r.text || "").slice(0, 1000).replace(/"/g, '""') + '"',
+    ]);
     const csv = [header.join(","), ...rows.map(r => r.join(","))].join("\n");
     const blob = new Blob([csv], { type: "text/csv" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "eval_results.csv"; a.click(); URL.revokeObjectURL(url);
-  }, [results, prompt1Label, prompt2Label]);
-
-  const s1 = results?.s1, s2 = results?.s2;
-  const convertedCount = csvData?.rows?.filter(r => r.IsConverted === "Yes").length || 0;
-  const notConvertedCount = csvData?.rows?.filter(r => r.IsConverted === "No").length || 0;
+  }, [results]);
 
   return (
     <div style={{ fontFamily: "'IBM Plex Sans', sans-serif", background: C.bg, color: C.text, minHeight: "100vh" }}>
       <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
-      <ChatModal item={chatItem} onClose={() => setChatItem(null)} promptLabels={[prompt1Label, prompt2Label]} />
+      <ChatModal item={chatItem} onClose={() => setChatItem(null)} />
 
       {/* Header */}
       <div style={{ borderBottom: "1px solid " + C.border, padding: "18px 28px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 14, fontFamily: "'JetBrains Mono'", color: C.accent, fontWeight: 600 }}>{"\u25b8"}</span>
-            <h1 style={{ margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em" }}>Segmentation Eval</h1>
+            <h1 style={{ margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em" }}>Prompt Eval</h1>
           </div>
-          <p style={{ margin: "3px 0 0 22px", fontSize: 12, color: C.textMuted }}>JustAnswer {"\u2194"} Fount routing {"\u00b7"} prompt comparison</p>
+          <p style={{ margin: "3px 0 0 22px", fontSize: 12, color: C.textMuted }}>Test prompt output against conversation data</p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button onClick={() => setShowHistory(!showHistory)} style={{
             background: showHistory ? C.purpleDim : "transparent", color: showHistory ? C.purple : C.textDim,
             border: "1px solid " + (showHistory ? C.purple + "44" : C.border),
             borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer",
-          }}>Run History ({savedRuns.length})</button>
+          }}>History ({savedRuns.length})</button>
           {results && <button onClick={exportCSV} style={{ background: "transparent", color: C.cyan, border: "1px solid " + C.cyan + "44", borderRadius: 6, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Export CSV</button>}
           <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: status === "running" ? C.accent : status === "done" ? C.green : C.textDim, background: status === "running" ? C.accentDim : status === "done" ? C.greenDim : "transparent", padding: "3px 10px", borderRadius: 4, border: "1px solid " + (status === "running" ? C.accent : status === "done" ? C.green : C.textDim) + "33" }}>{status === "running" ? "Running" : status === "done" ? "Complete" : "Idle"}</span>
         </div>
       </div>
 
       <div style={{ display: "flex" }}>
-        {/* History sidebar */}
         {showHistory && (
           <div style={{ width: 280, minWidth: 280, borderRight: "1px solid " + C.border, padding: 16, overflowY: "auto", maxHeight: "calc(100vh - 70px)" }}>
             <Label>Saved Runs</Label>
@@ -461,45 +417,53 @@ export default function Page() {
           </div>
         )}
 
-        {/* Main content */}
-        <div style={{ flex: 1, padding: "20px 28px", maxWidth: 1300 }}>
+        <div style={{ flex: 1, padding: "20px 28px", maxWidth: 1100 }}>
 
-          {/* Prompts */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
-            {[[prompt1, setPrompt1, prompt1Label, setPrompt1Label, C.accent], [prompt2, setPrompt2, prompt2Label, setPrompt2Label, C.purple]].map(([p, setP, lbl, setLbl, clr], idx) => (
-              <Card key={idx}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: clr }} />
-                  <Label>Prompt {idx + 1}</Label>
-                  <input value={lbl} onChange={e => setLbl(e.target.value)} style={{ background: C.bg, color: clr, border: "1px solid " + C.border, borderRadius: 4, padding: "2px 8px", fontSize: 12, fontWeight: 600, width: 120, marginLeft: "auto" }} />
-                </div>
-                <textarea value={p} onChange={e => setP(e.target.value)} rows={5} style={{ width: "100%", boxSizing: "border-box", background: C.bg, border: "1px solid " + C.border, borderRadius: 6, color: C.text, fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", padding: 12, resize: "vertical", lineHeight: 1.5, outline: "none" }} onFocus={e => e.target.style.borderColor = clr} onBlur={e => e.target.style.borderColor = C.border} />
-              </Card>
-            ))}
-          </div>
+          {/* Prompt */}
+          <Card style={{ marginBottom: 18 }}>
+            <Label>Prompt</Label>
+            <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={6} style={{
+              width: "100%", boxSizing: "border-box", background: C.bg, border: "1px solid " + C.border,
+              borderRadius: 6, color: C.text, fontSize: 12, fontFamily: "'IBM Plex Mono', monospace",
+              padding: 12, resize: "vertical", lineHeight: 1.5, outline: "none",
+            }} onFocus={e => e.target.style.borderColor = C.accent} onBlur={e => e.target.style.borderColor = C.border} />
+          </Card>
 
-          {/* Upload + sample */}
+          {/* Upload + config */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
             <Card>
-              <Label>Conversation Log (CSV)</Label>
+              <Label>Data (CSV)</Label>
               <input type="file" accept=".csv" onChange={handleFile} style={{ fontSize: 12, color: C.text, marginBottom: 10 }} />
-              {csvData && <div style={{ fontSize: 11, fontFamily: "'JetBrains Mono'", lineHeight: 1.8 }}><span style={{ color: C.green }}>{"\u2713"} {csvData.rows.length} conversations loaded</span><br /><span style={{ color: C.textDim }}>Converted (JA): {convertedCount} {"\u00b7"} Didn't Convert: {notConvertedCount}</span></div>}
+              {csvData && (
+                <>
+                  <div style={{ fontSize: 11, color: C.green, fontFamily: "'JetBrains Mono'", marginBottom: 10 }}>{"\u2713"} {csvData.rows.length} rows {"\u00b7"} {csvData.headers.length} columns</div>
+                  <div>
+                    <span style={{ fontSize: 11, color: C.textDim, marginRight: 8 }}>Column to classify:</span>
+                    <Select value={textCol} onChange={setTextCol} options={csvData.headers} />
+                  </div>
+                </>
+              )}
             </Card>
             <Card>
               <Label>Sample Size</Label>
-              <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Start with a sample to test before running all conversations.</div>
+              <div style={{ fontSize: 12, color: C.textDim, marginBottom: 8 }}>Start small to test, scale up when confident.</div>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 {[25, 50, 100, 200].map(n => <button key={n} onClick={() => setSampleSize(n)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", background: sampleSize === n ? C.accentDim : C.bg, border: "1px solid " + (sampleSize === n ? C.accent : C.border), color: sampleSize === n ? C.accent : C.textDim }}>{n}</button>)}
                 <button onClick={() => setSampleSize(csvData?.rows?.length || 0)} style={{ padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", background: sampleSize >= (csvData?.rows?.length || 999999) ? C.accentDim : C.bg, border: "1px solid " + (sampleSize >= (csvData?.rows?.length || 999999) ? C.accent : C.border), color: sampleSize >= (csvData?.rows?.length || 999999) ? C.accent : C.textDim }}>All</button>
               </div>
-              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 8 }}>~{Math.ceil(sampleSize * 2 * 0.4 / 60)} min estimated {"\u00b7"} {sampleSize * 2} API calls</div>
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 8 }}>~{Math.ceil(sampleSize * 0.4 / 60)} min {"\u00b7"} {sampleSize} API calls</div>
             </Card>
           </div>
 
           {/* Run + save */}
           <div style={{ display: "flex", gap: 10, marginBottom: 20, alignItems: "center", flexWrap: "wrap" }}>
-            <button onClick={runEval} disabled={status === "running" || !csvData} style={{ background: status === "running" ? C.textDim : C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "10px 28px", fontSize: 13, fontWeight: 600, cursor: status === "running" || !csvData ? "not-allowed" : "pointer", opacity: !csvData && status !== "running" ? 0.4 : 1 }}>
-              {status === "running" ? progress.phase + " (" + progress.done + "/" + progress.total + ")" : "Run Both Prompts (" + sampleSize + " convos)"}
+            <button onClick={runEval} disabled={status === "running" || !csvData || !textCol} style={{
+              background: status === "running" ? C.textDim : C.accent, color: "#fff", border: "none",
+              borderRadius: 8, padding: "10px 28px", fontSize: 13, fontWeight: 600,
+              cursor: status === "running" || !csvData || !textCol ? "not-allowed" : "pointer",
+              opacity: (!csvData || !textCol) && status !== "running" ? 0.4 : 1,
+            }}>
+              {status === "running" ? "Processing " + progress.done + "/" + progress.total + "..." : "Run (" + sampleSize + " rows)"}
             </button>
             {status === "running" && <button onClick={() => { abortRef.current = true; }} style={{ background: C.redDim, color: C.red, border: "1px solid " + C.red + "44", borderRadius: 8, padding: "10px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Stop</button>}
             {status === "done" && !activeRunId && (
@@ -514,46 +478,25 @@ export default function Page() {
             {errorMsg && <span style={{ fontSize: 12, color: C.red }}>{errorMsg}</span>}
           </div>
 
-          {status === "running" && <div style={{ marginBottom: 24 }}><div style={{ background: C.surface, borderRadius: 6, height: 6, overflow: "hidden", border: "1px solid " + C.border }}><div style={{ width: (progress.total > 0 ? (progress.done / progress.total * 100) : 0) + "%", height: "100%", background: "linear-gradient(90deg, " + C.accent + ", " + C.purple + ")", borderRadius: 6, transition: "width 0.3s ease" }} /></div></div>}
+          {status === "running" && <div style={{ marginBottom: 24 }}><div style={{ background: C.surface, borderRadius: 6, height: 6, overflow: "hidden", border: "1px solid " + C.border }}><div style={{ width: (progress.total > 0 ? (progress.done / progress.total * 100) : 0) + "%", height: "100%", background: C.accent, borderRadius: 6, transition: "width 0.3s ease" }} /></div></div>}
 
           {/* Results */}
-          {results && s1 && s2 && (<>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
-              {[[s1, prompt1Label, C.accent], [s2, prompt2Label, C.purple]].map(([s, lbl, clr], idx) => (
-                <Card key={idx}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}><div style={{ width: 8, height: 8, borderRadius: "50%", background: clr }} /><div style={{ fontSize: 13, fontWeight: 600 }}>{lbl}</div></div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-                    <MetricCard label='Said "No" (Actionable)' value={s.actionable} color={clr} sub={pct(s.actionable, s.valid) + " of total"} />
-                    <MetricCard label='Said "Yes" (General)' value={s.general} color={C.textMuted} sub={pct(s.general, s.valid) + " of total"} />
-                    <MetricCard label="Alignment" value={pct(s.matchesExpected, s.valid)} color={C.amber} sub={s.matchesExpected + " of " + s.valid + " match"} />
-                  </div>
-                  <Label>Conversion correlation</Label>
-                  <CorrelationBar label={'Said "No" (Actionable)'} bounced={s.actionable_notConverted} converted={s.actionable_converted} total={s.actionable} color={clr} />
-                  <div style={{ fontSize: 10, color: C.textDim, marginBottom: 12, marginTop: -8 }}>{s.actionable_notConverted} didn't convert (expected) {"\u00b7"} {s.actionable_converted} converted on JA (surprise)</div>
-                  <CorrelationBar label={'Said "Yes" (General)'} bounced={s.general_notConverted} converted={s.general_converted} total={s.general} color={C.green} />
-                  <div style={{ fontSize: 10, color: C.textDim, marginTop: -8 }}>{s.general_converted} converted (expected) {"\u00b7"} {s.general_notConverted} didn't convert (surprise)</div>
-                </Card>
-              ))}
+          {results && (<>
+            <div style={{ display: "flex", gap: 12, marginBottom: 18 }}>
+              <MetricCard label='Said "Yes" (General)' value={results.yesCount} color={C.green} sub={pct(results.yesCount, results.total - results.errors) + " of total"} />
+              <MetricCard label='Said "No" (Actionable)' value={results.noCount} color={C.accent} sub={pct(results.noCount, results.total - results.errors) + " of total"} />
+              <MetricCard label="Total" value={results.total} color={C.text} sub={results.errors > 0 ? results.errors + " errors" : "0 errors"} />
             </div>
-
-            <Card style={{ marginBottom: 18, borderColor: C.purple + "44" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <div><span style={{ fontSize: 28, fontWeight: 700, color: C.purple, fontFamily: "'JetBrains Mono'" }}>{results.disagreeCount}</span><span style={{ fontSize: 13, color: C.textMuted, marginLeft: 10 }}>conversations where prompts disagree</span><span style={{ fontSize: 12, color: C.textDim, marginLeft: 6 }}>({pct(results.disagreeCount, results.total)})</span></div>
-                <button onClick={() => setDetailFilter("disagree")} style={{ background: C.purpleDim, color: C.purple, border: "1px solid " + C.purple + "44", borderRadius: 6, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>View Disagreements</button>
-              </div>
-            </Card>
 
             <Card>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
                 <Label>Results ({filteredRows.length})</Label>
-                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", gap: 4 }}>
                   {[
                     { key: "all", label: "All", color: C.text },
-                    { key: "disagree", label: "Disagree", color: C.purple },
-                    { key: "both_actionable", label: 'Both "No"', color: C.accent },
-                    { key: "both_general", label: 'Both "Yes"', color: C.green },
-                    { key: "didnt_convert", label: "Didn't Convert", color: C.amber },
-                    { key: "converted", label: "Converted", color: C.green },
+                    { key: "yes", label: 'Said "Yes"', color: C.green },
+                    { key: "no", label: 'Said "No"', color: C.accent },
+                    ...(results.errors > 0 ? [{ key: "error", label: "Errors", color: C.red }] : []),
                   ].map(f => (
                     <button key={f.key} onClick={() => setDetailFilter(f.key)} style={{ background: detailFilter === f.key ? f.color + "22" : "transparent", color: detailFilter === f.key ? f.color : C.textDim, border: "1px solid " + (detailFilter === f.key ? f.color + "44" : C.border), borderRadius: 5, padding: "3px 9px", fontSize: 10, fontWeight: 600, cursor: "pointer", fontFamily: "'JetBrains Mono'" }}>{f.label}</button>
                   ))}
@@ -562,20 +505,19 @@ export default function Page() {
               <div style={{ maxHeight: 500, overflowY: "auto", borderRadius: 6, border: "1px solid " + C.border }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead><tr style={{ position: "sticky", top: 0, background: C.bg, zIndex: 1 }}>
-                    {["#", prompt1Label, prompt2Label, "JA", "Agree?", "Conversation"].map(h => <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, fontWeight: 600 }}>{h}</th>)}
+                    {["#", "Result", "Reasoning", "Text"].map(h => <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, fontWeight: 600 }}>{h}</th>)}
                   </tr></thead>
                   <tbody>
-                    {filteredRows.slice(0, 200).map((r, i) => {
-                      const agree = r.p1Predicted === r.p2Predicted;
-                      return (<tr key={r.index} onClick={() => setChatItem(r)} style={{ borderBottom: "1px solid " + C.border, cursor: "pointer", background: i % 2 === 0 ? "transparent" : C.bg + "80" }} onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover} onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : C.bg + "80"}>
+                    {filteredRows.slice(0, 200).map((r, i) => (
+                      <tr key={r.index} onClick={() => setChatItem(r)} style={{ borderBottom: "1px solid " + C.border, cursor: "pointer", background: i % 2 === 0 ? "transparent" : C.bg + "80" }} onMouseEnter={e => e.currentTarget.style.background = C.surfaceHover} onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "transparent" : C.bg + "80"}>
                         <td style={{ padding: "8px 10px", fontFamily: "'JetBrains Mono'", color: C.textDim, fontSize: 11 }}>{r.index + 1}</td>
-                        <td style={{ padding: "8px 10px" }}><Pill label={r.p1Predicted === "ACTIONABLE" ? "No" : "Yes"} color={r.p1Error ? C.red : r.p1Predicted === "ACTIONABLE" ? C.accent : C.green} bg={r.p1Error ? C.redDim : r.p1Predicted === "ACTIONABLE" ? C.accentDim : C.greenDim} /></td>
-                        <td style={{ padding: "8px 10px" }}><Pill label={r.p2Predicted === "ACTIONABLE" ? "No" : "Yes"} color={r.p2Error ? C.red : r.p2Predicted === "ACTIONABLE" ? C.purple : C.green} bg={r.p2Error ? C.redDim : r.p2Predicted === "ACTIONABLE" ? C.purpleDim : C.greenDim} /></td>
-                        <td style={{ padding: "8px 10px" }}><Pill label={r.isConverted === "Yes" ? "Conv." : "Didn't Conv."} color={r.isConverted === "Yes" ? C.green : C.amber} bg={r.isConverted === "Yes" ? C.greenDim : C.amberDim} /></td>
-                        <td style={{ padding: "8px 10px", fontSize: 13 }}>{agree ? <span style={{ color: C.green }}>{"\u2713"}</span> : <span style={{ color: C.purple }}>{"\u2717"}</span>}</td>
-                        <td style={{ padding: "8px 10px", color: C.textDim, fontSize: 11, fontFamily: "'IBM Plex Mono'", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.conversation?.slice(0, 150)}</td>
-                      </tr>);
-                    })}
+                        <td style={{ padding: "8px 10px" }}>
+                          <Pill label={r.error ? "ERR" : r.predicted === "NO" ? "No" : "Yes"} color={r.error ? C.red : r.predicted === "NO" ? C.accent : C.green} bg={r.error ? C.redDim : r.predicted === "NO" ? C.accentDim : C.greenDim} />
+                        </td>
+                        <td style={{ padding: "8px 10px", color: C.textDim, fontSize: 11, maxWidth: 250, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.reasoning || r.error || ""}</td>
+                        <td style={{ padding: "8px 10px", color: C.textDim, fontSize: 11, fontFamily: "'IBM Plex Mono'", maxWidth: 350, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.text?.slice(0, 150)}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -583,7 +525,7 @@ export default function Page() {
             </Card>
           </>)}
 
-          {status === "idle" && !results && <div style={{ textAlign: "center", padding: "40px 20px", color: C.textDim }}><div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>{"\u25b8 \u25b8"}</div><div style={{ fontSize: 13, marginBottom: 4 }}>Upload your conversation log, pick a sample size, and run</div><div style={{ fontSize: 12 }}>Prompts output Yes (general) or No (actionable) {"\u00b7"} compared against IsConverted</div></div>}
+          {status === "idle" && !results && <div style={{ textAlign: "center", padding: "40px 20px", color: C.textDim }}><div style={{ fontSize: 32, marginBottom: 8, opacity: 0.3 }}>{"\u25b8"}</div><div style={{ fontSize: 13, marginBottom: 4 }}>Upload a CSV, pick the column to classify, and run</div><div style={{ fontSize: 12 }}>One prompt {"\u00b7"} Any data {"\u00b7"} See every result</div></div>}
         </div>
       </div>
     </div>
